@@ -35,11 +35,53 @@
     input:focus { outline: 2px solid #9ec5fe; border-color: #1565c0; }
     fieldset { border: none; margin-bottom: 14px; }
     .desc { color: #5b6b7c; font-size: 12px; margin-top: 4px; line-height: 1.4; }
+    /* ---- Пороги ---- */
+    #threshold-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+    .threshold-row { display: flex; gap: 8px; align-items: center; }
+    .threshold-row input { flex: 1; }
+    .threshold-row .t-label {
+      color: #5b6b7c;
+      font-size: 12px;
+      min-width: 52px;
+    }
+    .threshold-row .rm {
+      border: 1px solid #d0d7de;
+      background: #fff;
+      color: #c62828;
+      border-radius: 6px;
+      width: 32px;
+      height: 32px;
+      font-size: 14px;
+      cursor: pointer;
+      flex: none;
+    }
+    .threshold-row .rm:hover { background: #fdecea; }
+    #add-threshold {
+      margin-top: 10px;
+      padding: 7px 12px;
+      border: 1px dashed #b0b9c2;
+      background: #fff;
+      border-radius: 6px;
+      font-size: 13px;
+      color: #1c1c1c;
+      cursor: pointer;
+      width: 100%;
+    }
+    #add-threshold:hover { background: #f1f5f9; }
     .toggle-row { display: flex; align-items: center; gap: 10px; }
     .toggle-row input { width: auto; }
     .toggle-row label { margin: 0; font-weight: 400; }
     .actions { display: flex; gap: 10px; margin-top: 4px; }
-    button {
+    button.primary {
+      padding: 9px 16px;
+      border-radius: 6px;
+      border: 1px solid #1565c0;
+      background: #1565c0;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button.secondary {
       padding: 9px 16px;
       border-radius: 6px;
       border: 1px solid #d0d7de;
@@ -47,7 +89,6 @@
       font-size: 14px;
       cursor: pointer;
     }
-    button.primary { background: #1565c0; border-color: #1565c0; color: #fff; }
     button:hover { filter: brightness(0.97); }
     #status { margin-top: 14px; font-size: 13px; min-height: 18px; }
     #status.ok { color: #2e7d32; }
@@ -73,20 +114,30 @@
     </fieldset>
 
     <fieldset>
-      <label for="threshold">Порог оповещения, кредитов</label>
-      <input type="number" id="threshold" min="0" step="100" value="5000" />
-      <div class="desc">Уведомление придёт, когда <code>totalLimit</code> (тариф + буст) опустится до этого значения или ниже.</div>
+      <label>Пороги оповещения, кредитов</label>
+      <div class="desc" style="margin-bottom:8px">
+        Можно задать любое количество порогов. Уведомление придёт, когда
+        <code>totalLimit</code> опустится до значения порога или ниже — по каждому порогу по одному алерту
+        (повторный алерт по тому же порогу — после возврата остатка выше него).
+      </div>
+      <div id="threshold-list"></div>
+      <button id="add-threshold" type="button">+ Добавить порог</button>
     </fieldset>
 
     <div class="toggle-row">
       <input type="checkbox" id="notify" checked />
-      <label for="notify">Отправлять уведомления при низком остатке</label>
+      <label for="notify">Отправлять уведомления по порогам</label>
+    </div>
+
+    <div class="toggle-row" style="margin-top:10px">
+      <input type="checkbox" id="notify-update" checked />
+      <label for="notify-update">Уведомлять об обновлении лимита (сброс/буст) — ровно одно сообщение</label>
     </div>
   </div>
 
   <div class="actions">
-    <button id="save" class="primary">Сохранить</button>
-    <button id="test">Проверить сейчас</button>
+    <button id="save" class="primary" type="button">Сохранить</button>
+    <button id="test" class="secondary" type="button">Проверить сейчас</button>
   </div>
   <div id="status"></div>
 
