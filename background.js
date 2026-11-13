@@ -1,6 +1,6 @@
 // WormSoft Limit Monitor — фоновой сервис-воркер (MV3)
 // Опрос https://ai.wormsoft.ru/api/v1/account/limits раз в 5 минут,
-// обновление значка, уведомления о низком остатке.
+// обновление значка, уведомления при пересечении порогов (их может быть несколько).
 
 const ALARM_NAME = 'wormsoft-limit-check';
 const CHECK_INTERVAL_MIN = 5;
@@ -8,15 +8,22 @@ const CHECK_INTERVAL_MIN = 5;
 const DEFAULTS = {
   endpoint: 'https://ai.wormsoft.ru/api/v1/account/limits',
   apiKey: '',
-  thresholdCredits: 5000,
+  thresholds: [5000], // число порогов и их значения — настраиваемы пользователем
   notifyOnDrop: true,
+  notifyOnUpdate: true, // одно уведомление при обновлении (сбросе) лимита
 };
 
 // ---------- Настройки ----------
 
 async function getSettings() {
-  const stored = await chrome.storage.local.get(Object.keys(DEFAULTS));
-  return { ...DEFAULTS, ...stored };
+  const stored = await chrome.storage.local.get(Object.keys(DEFAULTS).concat('thresholdCredits'));
+  const s = { ...DEFAULTS, ...stored };
+  // Миграция с одиночного порога (thresholdCredits) в список (thresholds)
+  if (!Array.isArray(s.thresholds) || s.thresholds.length === 0) {
+    if (Number.isFinite(stored.thresholdCredits)) s.thresholds = [stored.thresholdCredits];
+    else s.thresholds = DEFAULTS.thresholds.slice();
+  }
+  return s;
 }
 
 // ---------- Формат ответа WormSoft ----------
@@ -163,22 +170,61 @@ function fmtNum(n) {
   return String(Math.round(n));
 }
 
-// ---------- Уведомления ----------
+// ---------- Уведомления по порогам ----------
+// Пользователь задаёт любой список порогов (в кредитах). Для каждого порога:
+// уведомление в момент, когда totalLimit становится <= порога, и ровно одно
+// за период, пока остаток ниже порога (повторный алерт — после возврата выше).
 
-async function maybeNotify(state, prev) {
+async function maybeNotify(state) {
   const settings = await getSettings();
   if (!settings.notifyOnDrop || !state.ok || state.total === null) return;
 
-  const threshold = settings.thresholdCredits;
-  const isBelow = state.total <= threshold;
-  const wasAbove = prev && prev.ok && prev.total !== null ? prev.total > threshold : null;
-  if (!isBelow || wasAbove === false) return;
+  const thresholds = [...new Set(settings.thresholds.filter((t) => Number.isFinite(t) && t >= 0))];
+  if (thresholds.length === 0) return;
 
+  const { thresholdAlerts } = await chrome.storage.local.get('thresholdAlerts');
+  const previous = thresholdAlerts && typeof thresholdAlerts === 'object' ? thresholdAlerts : {};
+  const next = {};
+  const newlyCrossed = [];
+
+  for (const t of thresholds) {
+    const key = String(t);
+    if (state.total <= t) {
+      next[key] = true; // находимся ниже порога: алерт активен
+      if (!previous[key]) newlyCrossed.push(t); // впервые (с точки зрения расширения)
+    }
+    // else: остаток выше порога -> ключ не включаем, алерт «сбрасывается»
+  }
+
+  await chrome.storage.local.set({ thresholdAlerts: next });
+  if (newlyCrossed.length === 0) return;
+
+  const crossed = newlyCrossed.sort((a, b) => b - a)
+    .map((t) => fmtNum(t))
+    .join(', ');
   chrome.notifications.create('wormsoft-limit-low', {
     type: 'basic',
     iconUrl: 'icons/icon48.png',
     title: 'WormSoft: кредиты на исходе',
-    message: `Осталось ${fmtNum(state.total)} кредитов (порог: ${fmtNum(threshold)}).`,
+    message: `Осталось ${fmtNum(state.total)} кредитов. Пересечён порог: ${crossed}.`,
+  });
+}
+
+// ---------- Уведомление об обновлении лимита ----------
+// Когда totalLimit ВЫРОС относительно предыдущей проверки (сброс периода,
+// добавлен буст, расширен тариф) — ровно ОДНО уведомление.
+
+async function maybeNotifyUpdate(state, prev) {
+  const settings = await getSettings();
+  if (!settings.notifyOnUpdate || !state.ok || state.total === null) return;
+  if (!prev || !prev.ok || prev.total === null) return;
+  if (state.total <= prev.total) return; // рост не обнаружен
+
+  chrome.notifications.create('wormsoft-limit-updated', {
+    type: 'basic',
+    iconUrl: 'icons/icon48.png',
+    title: 'WormSoft: лимит обновлён',
+    message: `Остаток кредитов увеличился: с ${fmtNum(prev.total)} до ${fmtNum(state.total)}.`,
   });
 }
 
@@ -189,7 +235,8 @@ async function runCheck() {
   const state = await checkLimit();
   await chrome.storage.local.set({ lastState: state });
   await updateBadge(state);
-  await maybeNotify(state, prev);
+  await maybeNotify(state);
+  await maybeNotifyUpdate(state, prev);
 }
 
 async function ensureAlarm() {
