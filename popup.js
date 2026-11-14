@@ -58,12 +58,19 @@ function render(state, memory) {
   if (state.error) {
     quotaView.style.display = 'none';
     errorView.style.display = 'block';
-    errorView.innerHTML = `${state.error} <a href="#" id="go-options">Открыть настройки →</a>`;
-    dot.style.cssText = 'width:10px;height:10px;border-radius:50%;background:#c62828;display:inline-block';
-    $('go-options').addEventListener('click', (e) => {
+    // state.error может содержать текст, управляемый сервером (res.statusText),
+    // поэтому рендерим ТОЛЬКО через textContent — без innerHTML.
+    errorView.textContent = state.error + ' ';
+    const a = document.createElement('a');
+    a.href = '#';
+    a.id = 'go-options';
+    a.textContent = 'Открыть настройки →';
+    a.addEventListener('click', (e) => {
       e.preventDefault();
       openOptions();
     });
+    errorView.append(a);
+    dot.style.cssText = 'width:10px;height:10px;border-radius:50%;background:#c62828;display:inline-block';
     return;
   }
 
