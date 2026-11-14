@@ -69,6 +69,29 @@ function num(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+// ---------- Валидация эндпоинта (безопасность) ----------
+// API-ключ уходит в Authorization-заголовке ровно на этот URL, поэтому
+// защищаемся от http://, опечаток и спуф-хостов (ai.wormsoft.ru.evil.ru):
+// допустим только https и хосты *.wormsoft.ru. Иначе запрос не выполняется
+// и ключ никуда не отправляется.
+
+function validateEndpoint(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return 'Некорректный URL эндпоинта.';
+  }
+  if (u.protocol !== 'https:') {
+    return 'Эндпоинт должен быть https — ключ не должен уходить в открытом виде.';
+  }
+  const host = u.hostname;
+  if (host !== 'ai.wormsoft.ru' && !host.endsWith('.wormsoft.ru')) {
+    return `Хост «${host}» не относится к wormsoft.ru — запрос отменён, чтобы API-ключ не был отправлен не туда.`;
+  }
+  return null;
+}
+
 // ---------- Запрос лимита ----------
 
 async function checkLimit() {
@@ -88,6 +111,11 @@ async function checkLimit() {
 
   if (!settings.endpoint) {
     state.error = 'Не указан URL API. Откройте настройки расширения.';
+    return state;
+  }
+  const endpointError = validateEndpoint(settings.endpoint);
+  if (endpointError) {
+    state.error = endpointError;
     return state;
   }
   if (!settings.apiKey) {
@@ -240,9 +268,12 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) runCheck();
 });
 
-// Повторная проверка по запросу popup / options
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg && msg.type === 'CHECK_NOW') {
+// Повторная проверка по запросу popup / options.
+// Превентивно принимаем сообщения только от контекстов собственного
+// расширения (sender.id) — на случай, если когда-нибудь добавятся
+// content scripts.
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.type === 'CHECK_NOW' && sender.id === chrome.runtime.id) {
     runCheck().then(() =>
       chrome.storage.local.get('lastState', (r) => sendResponse({ ok: true, state: r.lastState }))
     );
