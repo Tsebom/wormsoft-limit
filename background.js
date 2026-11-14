@@ -1,29 +1,20 @@
 // WormSoft Limit Monitor — фоновой сервис-воркер (MV3)
-// Опрос https://ai.wormsoft.ru/api/v1/account/limits раз в 5 минут,
-// обновление значка, уведомления при пересечении порогов (их может быть несколько).
+// Опрос https://ai.wormsoft.ru/api/v1/account/limits раз в минуту и
+// обновление значка (остаток кредитов прямо на иконке).
 
 const ALARM_NAME = 'wormsoft-limit-check';
-const CHECK_INTERVAL_MIN = 5;
+const CHECK_INTERVAL_MIN = 1;
 
 const DEFAULTS = {
   endpoint: 'https://ai.wormsoft.ru/api/v1/account/limits',
   apiKey: '',
-  thresholds: [5000], // число порогов и их значения — настраиваемы пользователем
-  notifyOnDrop: true,
-  notifyOnUpdate: true, // одно уведомление при обновлении (сбросе) лимита
 };
 
 // ---------- Настройки ----------
 
 async function getSettings() {
-  const stored = await chrome.storage.local.get(Object.keys(DEFAULTS).concat('thresholdCredits'));
-  const s = { ...DEFAULTS, ...stored };
-  // Миграция с одиночного порога (thresholdCredits) в список (thresholds)
-  if (!Array.isArray(s.thresholds) || s.thresholds.length === 0) {
-    if (Number.isFinite(stored.thresholdCredits)) s.thresholds = [stored.thresholdCredits];
-    else s.thresholds = DEFAULTS.thresholds.slice();
-  }
-  return s;
+  const stored = await chrome.storage.local.get(Object.keys(DEFAULTS));
+  return { ...DEFAULTS, ...stored };
 }
 
 // ---------- Формат ответа WormSoft ----------
@@ -149,7 +140,21 @@ async function checkLimit() {
 
 // ---------- Значок ----------
 
-async function updateBadge(state) {
+// Плавный градиент «зелёный 100% → красный 0%»: hue 120→0 при фиксированных
+// насыщенности/яркости (ближе к исходным #2e7d32 и #c62828).
+function badgeColorFor(pct) {
+  const p = Math.max(0, Math.min(1, pct));
+  const h = 120 * p, s = 0.7, l = 0.4;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const c = l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+    return Math.round(255 * c).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+async function updateBadge(state, memory) {
   const action = chrome.action;
   if (state.error) {
     await action.setBadgeText({ text: '!' });
@@ -158,9 +163,21 @@ async function updateBadge(state) {
   }
   if (state.total === null) return;
   await action.setBadgeText({ text: fmtNum(state.total) });
-  // Красный — кредитов нет; оранжевый — заморозка (действуют лимиты Free); зелёный — норма.
-  const color = state.total <= 0 ? '#c62828' : state.isFrozen ? '#ef6c00' : '#2e7d32';
-  await action.setBadgeBackgroundColor({ color });
+  if (state.isFrozen) {
+    // Оранжевый — заморозка (действуют лимиты Free).
+    await action.setBadgeBackgroundColor({ color: '#ef6c00' });
+    return;
+  }
+  // Градиент от ориентира по тарифу: сколько % кредита осталось.
+  // Если ориентир ещё не зафиксирован (первые проверки до сброса периода) — зелёный.
+  const hasOrientation =
+    state.subscription !== null &&
+    memory &&
+    memory.type === state.subscriptionType &&
+    typeof memory.maxSubscription === 'number' &&
+    memory.maxSubscription > 0;
+  const pct = hasOrientation ? state.subscription / memory.maxSubscription : 1;
+  await action.setBadgeBackgroundColor({ color: badgeColorFor(pct) });
 }
 
 function fmtNum(n) {
@@ -170,73 +187,41 @@ function fmtNum(n) {
   return String(Math.round(n));
 }
 
-// ---------- Уведомления по порогам ----------
-// Пользователь задаёт любой список порогов (в кредитах). Для каждого порога:
-// уведомление в момент, когда totalLimit становится <= порога, и ровно одно
-// за период, пока остаток ниже порога (повторный алерт — после возврата выше).
+// ---------- Память «максимального зафиксированного» остатка по тарифу ----------
+// API не возвращает размер полного лимита подписки, поэтому в качестве
+// ориентира (приближения) берём самое большое наблюдаемое значение
+// subscriptionLimit с момента последнего изменения тарифа. При смене
+// subscriptionType (включая заморозку) память сбрасывается и ориентир
+// определяется заново.
 
-async function maybeNotify(state) {
-  const settings = await getSettings();
-  if (!settings.notifyOnDrop || !state.ok || state.total === null) return;
+async function updateQuotaMemory(state) {
+  if (!state.ok || state.subscription === null) return;
+  const { quotaMemory } = await chrome.storage.local.get('quotaMemory');
+  const cur = quotaMemory && typeof quotaMemory === 'object' ? quotaMemory : null;
 
-  const thresholds = [...new Set(settings.thresholds.filter((t) => Number.isFinite(t) && t >= 0))];
-  if (thresholds.length === 0) return;
-
-  const { thresholdAlerts } = await chrome.storage.local.get('thresholdAlerts');
-  const previous = thresholdAlerts && typeof thresholdAlerts === 'object' ? thresholdAlerts : {};
-  const next = {};
-  const newlyCrossed = [];
-
-  for (const t of thresholds) {
-    const key = String(t);
-    if (state.total <= t) {
-      next[key] = true; // находимся ниже порога: алерт активен
-      if (!previous[key]) newlyCrossed.push(t); // впервые (с точки зрения расширения)
-    }
-    // else: остаток выше порога -> ключ не включаем, алерт «сбрасывается»
+  if (!cur || cur.type !== state.subscriptionType) {
+    // Смена подписки — сбрасываем максимум и запоминаем с нуля.
+    await chrome.storage.local.set({
+      quotaMemory: { type: state.subscriptionType, maxSubscription: state.subscription },
+    });
+    return;
   }
-
-  await chrome.storage.local.set({ thresholdAlerts: next });
-  if (newlyCrossed.length === 0) return;
-
-  const crossed = newlyCrossed.sort((a, b) => b - a)
-    .map((t) => fmtNum(t))
-    .join(', ');
-  chrome.notifications.create('wormsoft-limit-low', {
-    type: 'basic',
-    iconUrl: 'icons/icon48.png',
-    title: 'WormSoft: кредиты на исходе',
-    message: `Осталось ${fmtNum(state.total)} кредитов. Пересечён порог: ${crossed}.`,
-  });
-}
-
-// ---------- Уведомление об обновлении лимита ----------
-// Когда totalLimit ВЫРОС относительно предыдущей проверки (сброс периода,
-// добавлен буст, расширен тариф) — ровно ОДНО уведомление.
-
-async function maybeNotifyUpdate(state, prev) {
-  const settings = await getSettings();
-  if (!settings.notifyOnUpdate || !state.ok || state.total === null) return;
-  if (!prev || !prev.ok || prev.total === null) return;
-  if (state.total <= prev.total) return; // рост не обнаружен
-
-  chrome.notifications.create('wormsoft-limit-updated', {
-    type: 'basic',
-    iconUrl: 'icons/icon48.png',
-    title: 'WormSoft: лимит обновлён',
-    message: `Остаток кредитов увеличился: с ${fmtNum(prev.total)} до ${fmtNum(state.total)}.`,
-  });
+  if (state.subscription > cur.maxSubscription) {
+    // Новый максимум (например, только что произошёл сброс периода).
+    await chrome.storage.local.set({
+      quotaMemory: { ...cur, maxSubscription: state.subscription },
+    });
+  }
 }
 
 // ---------- Оркестрация ----------
 
 async function runCheck() {
-  const prev = (await chrome.storage.local.get('lastState')).lastState || null;
   const state = await checkLimit();
+  await updateQuotaMemory(state);
+  const { quotaMemory } = await chrome.storage.local.get('quotaMemory');
   await chrome.storage.local.set({ lastState: state });
-  await updateBadge(state);
-  await maybeNotify(state);
-  await maybeNotifyUpdate(state, prev);
+  await updateBadge(state, quotaMemory);
 }
 
 async function ensureAlarm() {
