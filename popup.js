@@ -77,12 +77,21 @@ function render(state, memory) {
   errorView.style.display = 'none';
   quotaView.style.display = 'block';
 
+  // Счётчик и круг-индикатор — тем же цветом, что и бейдж: плавный градиент
+  // зелёный (100%) → красный (0%) по ориентиру по тарифу (badgeColorFor из
+  // shared.js), оранжевый при заморозке.
+  const max = memory && memory.type === state.subscriptionType
+    && typeof memory.maxSubscription === 'number' && memory.maxSubscription > 0
+    ? memory.maxSubscription : null;
+  const pct = state.subscription !== null && max ? state.subscription / max : 1;
+  const color = state.isFrozen ? '#ef6c00' : badgeColorFor(pct);
+
   const big = $('big');
   const total = state.total;
   big.textContent = fmtNum(total);
-  big.className = 'big ' + (total <= 0 ? 'danger' : state.isFrozen ? 'warn' : 'ok');
+  big.className = 'big';
+  big.style.color = color;
 
-  const color = total <= 0 ? '#c62828' : state.isFrozen ? '#ef6c00' : '#2e7d32';
   dot.style.cssText = `width:10px;height:10px;border-radius:50%;background:${color};display:inline-block`;
 
   $('frozen-banner').style.display = state.isFrozen ? 'block' : 'none';
