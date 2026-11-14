@@ -210,6 +210,33 @@ async function maybeNotify(state) {
   });
 }
 
+// ---------- Память «максимального зафиксированного» остатка по тарифу ----------
+// API не возвращает размер полного лимита подписки, поэтому в качестве
+// ориентира (приближения) берём самое большое наблюдаемое значение
+// subscriptionLimit с момента последнего изменения тарифа. При смене
+// subscriptionType (включая заморозку) память сбрасывается и ориентир
+// определяется заново.
+
+async function updateQuotaMemory(state) {
+  if (!state.ok || state.subscription === null) return;
+  const { quotaMemory } = await chrome.storage.local.get('quotaMemory');
+  const cur = quotaMemory && typeof quotaMemory === 'object' ? quotaMemory : null;
+
+  if (!cur || cur.type !== state.subscriptionType) {
+    // Смена подписки — сбрасываем максимум и запоминаем с нуля.
+    await chrome.storage.local.set({
+      quotaMemory: { type: state.subscriptionType, maxSubscription: state.subscription },
+    });
+    return;
+  }
+  if (state.subscription > cur.maxSubscription) {
+    // Новый максимум (например, только что произошёл сброс периода).
+    await chrome.storage.local.set({
+      quotaMemory: { ...cur, maxSubscription: state.subscription },
+    });
+  }
+}
+
 // ---------- Уведомление об обновлении лимита ----------
 // Когда totalLimit ВЫРОС относительно предыдущей проверки (сброс периода,
 // добавлен буст, расширен тариф) — ровно ОДНО уведомление.
@@ -233,6 +260,7 @@ async function maybeNotifyUpdate(state, prev) {
 async function runCheck() {
   const prev = (await chrome.storage.local.get('lastState')).lastState || null;
   const state = await checkLimit();
+  await updateQuotaMemory(state);
   await chrome.storage.local.set({ lastState: state });
   await updateBadge(state);
   await maybeNotify(state);

@@ -50,7 +50,7 @@ function setReset(id, unixSec, emptyText) {
   el.title = title;
 }
 
-function render(state) {
+function render(state, memory) {
   const dot = $('status-dot');
   const quotaView = $('quota-view');
   const errorView = $('error-view');
@@ -100,6 +100,26 @@ function render(state) {
   $('sub-type').textContent = state.subscriptionType
     ? state.subscriptionType + (state.isFrozen ? ' (заморожена)' : '')
     : '—';
+
+  // Ориентир — максимальный зафиксированный остаток по тарифу (API размер
+  // лимита не возвращает). Сбрасывается при смене subscriptionType.
+  const usage = $('usage');
+  if (
+    state.subscription !== null &&
+    memory &&
+    memory.type === state.subscriptionType &&
+    typeof memory.maxSubscription === 'number' &&
+    memory.maxSubscription > 0
+  ) {
+    const max = memory.maxSubscription;
+    const pct = Math.max(0, Math.min(100, Math.round((1 - state.subscription / max) * 100)));
+    usage.textContent = `${pct}% из ≈ ${fmtFull(max)}`;
+    usage.title = 'Ориентир — максимальный зафиксированный остаток по тарифу с момента последней смены тарифа (API не возвращает размер лимита)';
+  } else {
+    usage.textContent = '—';
+    usage.title = '';
+  }
+
   $('lastcheck').textContent = fmtTime(state.lastCheck);
 }
 
@@ -109,11 +129,12 @@ function openOptions() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  const { lastState } = await chrome.storage.local.get('lastState');
-  render(lastState || null);
+  const { lastState, quotaMemory } = await chrome.storage.local.get(['lastState', 'quotaMemory']);
+  render(lastState || null, quotaMemory || null);
   $('refresh').addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'CHECK_NOW' }, (resp) => {
-      render(resp && resp.state ? resp.state : null);
+    chrome.runtime.sendMessage({ type: 'CHECK_NOW' }, async (resp) => {
+      const { quotaMemory: mem } = await chrome.storage.local.get('quotaMemory');
+      render(resp && resp.state ? resp.state : null, mem || null);
     });
   });
   $('open-options').addEventListener('click', openOptions);
