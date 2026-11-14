@@ -1,9 +1,9 @@
 // WormSoft Limit Monitor — фоновой сервис-воркер (MV3)
-// Опрос https://ai.wormsoft.ru/api/v1/account/limits раз в 5 минут и
+// Опрос https://ai.wormsoft.ru/api/v1/account/limits раз в минуту и
 // обновление значка (остаток кредитов прямо на иконке).
 
 const ALARM_NAME = 'wormsoft-limit-check';
-const CHECK_INTERVAL_MIN = 5;
+const CHECK_INTERVAL_MIN = 1;
 
 const DEFAULTS = {
   endpoint: 'https://ai.wormsoft.ru/api/v1/account/limits',
