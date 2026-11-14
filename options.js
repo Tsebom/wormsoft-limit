@@ -5,10 +5,11 @@ const $ = (id) => document.getElementById(id);
 const DEFAULT_ENDPOINT = 'https://ai.wormsoft.ru/api/v1/account/limits';
 
 document.addEventListener('DOMContentLoaded', async () => {
-  const { endpoint, apiKey } = await chrome.storage.local.get(['endpoint', 'apiKey']);
+  const { endpoint, apiKey, planSize } = await chrome.storage.local.get(['endpoint', 'apiKey', 'planSize']);
 
   $('endpoint').value = endpoint || DEFAULT_ENDPOINT;
   $('apikey').value = apiKey || '';
+  $('plansize').value = planSize > 0 ? planSize : '';
 
   $('save').addEventListener('click', () => save(false));
   $('test').addEventListener('click', async () => {
@@ -28,10 +29,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 });
 
+function readPlanSize() {
+  const n = Math.floor(Number($('plansize').value));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 async function save(silent = false) {
   await chrome.storage.local.set({
     endpoint: $('endpoint').value.trim() || DEFAULT_ENDPOINT,
     apiKey: $('apikey').value.trim(),
+    planSize: readPlanSize(),
   });
   if (!silent) setStatus('ok', 'Сохранено.');
 }

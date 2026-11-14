@@ -8,6 +8,7 @@ const CHECK_INTERVAL_MIN = 1;
 const DEFAULTS = {
   endpoint: 'https://ai.wormsoft.ru/api/v1/account/limits',
   apiKey: '',
+  planSize: 0, // размер лимита по тарифу в кредитах; 0 = не указан (авто-ориентир)
 };
 
 // ---------- Настройки ----------
@@ -107,6 +108,8 @@ async function checkLimit() {
     boostResetAt: 0,
     subscriptionType: null,
     isFrozen: false,
+    knownMax: null,
+    knownMaxExact: false,
   };
 
   if (!settings.endpoint) {
@@ -182,7 +185,7 @@ function badgeColorFor(pct) {
   return `#${f(0)}${f(8)}${f(4)}`;
 }
 
-async function updateBadge(state, memory) {
+async function updateBadge(state) {
   const action = chrome.action;
   if (state.error) {
     await action.setBadgeText({ text: '!' });
@@ -197,14 +200,10 @@ async function updateBadge(state, memory) {
     return;
   }
   // Градиент от ориентира по тарифу: сколько % кредита осталось.
-  // Если ориентир ещё не зафиксирован (первые проверки до сброса периода) — зелёный.
-  const hasOrientation =
-    state.subscription !== null &&
-    memory &&
-    memory.type === state.subscriptionType &&
-    typeof memory.maxSubscription === 'number' &&
-    memory.maxSubscription > 0;
-  const pct = hasOrientation ? state.subscription / memory.maxSubscription : 1;
+  // knownMax — ручной размер лимита из настроек (точно) либо зафиксированный
+  // максимум (приближение). Если ориентир недоступен — зелёный.
+  const max = state.knownMax;
+  const pct = state.subscription !== null && max ? state.subscription / max : 1;
   await action.setBadgeBackgroundColor({ color: badgeColorFor(pct) });
 }
 
@@ -248,8 +247,29 @@ async function runCheck() {
   const state = await checkLimit();
   await updateQuotaMemory(state);
   const { quotaMemory } = await chrome.storage.local.get('quotaMemory');
+  const settings = await getSettings();
+
+  // Ориентир для процента и цвета бейджа:
+  // 1) если пользователь указал размер лимита по тарифу в настройках — он (точный);
+  // 2) иначе — зафиксированный максимум (приближение: полный после сброса периода).
+  const planSize = Number(settings.planSize);
+  const autoMax =
+    quotaMemory &&
+    quotaMemory.type === state.subscriptionType &&
+    typeof quotaMemory.maxSubscription === 'number' &&
+    quotaMemory.maxSubscription > 0
+      ? quotaMemory.maxSubscription
+      : null;
+  if (Number.isFinite(planSize) && planSize > 0) {
+    state.knownMax = planSize;
+    state.knownMaxExact = true;
+  } else {
+    state.knownMax = autoMax;
+    state.knownMaxExact = false;
+  }
+
   await chrome.storage.local.set({ lastState: state });
-  await updateBadge(state, quotaMemory);
+  await updateBadge(state);
 }
 
 async function ensureAlarm() {

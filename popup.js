@@ -43,7 +43,7 @@ function setReset(id, unixSec, emptyText) {
   el.title = title;
 }
 
-function render(state, memory) {
+function render(state) {
   const dot = $('status-dot');
   const quotaView = $('quota-view');
   const errorView = $('error-view');
@@ -101,25 +101,20 @@ function render(state, memory) {
     ? state.subscriptionType + (state.isFrozen ? ' (заморожена)' : '')
     : '—';
 
-  // Ориентир — максимальный зафиксированный остаток по тарифу (API размер
-  // лимита не возвращает). Сбрасывается при смене subscriptionType.
+  // knownMax: размер лимита по тарифу — либо указанный в настройках (точно),
+  // либо зафиксированный максимум (приближение; API размер не возвращает).
   const usage = $('usage');
-  if (
-    state.subscription !== null &&
-    memory &&
-    memory.type === state.subscriptionType &&
-    typeof memory.maxSubscription === 'number' &&
-    memory.maxSubscription > 0
-  ) {
-    const max = memory.maxSubscription;
+  if (state.subscription !== null && state.knownMax) {
+    const max = state.knownMax;
     const pct = Math.max(0, Math.min(100, Math.round((1 - state.subscription / max) * 100)));
-    usage.textContent = `${pct}% из ≈ ${fmtFull(max)}`;
-    usage.title = 'Ориентир — максимальный зафиксированный остаток по тарифу с момента последней смены тарифа (API не возвращает размер лимита)';
+    usage.textContent = `${pct}% из ${state.knownMaxExact ? '' : '≈ '}${fmtFull(max)}`;
+    usage.title = state.knownMaxExact
+      ? 'Размер лимита по тарифу, указанный в настройках'
+      : 'Ориентир — максимальный зафиксированный остаток по тарифу с момента последней смены тарифа (API не возвращает размер лимита)';
   } else {
     usage.textContent = '—';
     usage.title = '';
   }
-
 }
 
 function openOptions() {
@@ -128,12 +123,11 @@ function openOptions() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  const { lastState, quotaMemory } = await chrome.storage.local.get(['lastState', 'quotaMemory']);
-  render(lastState || null, quotaMemory || null);
+  const { lastState } = await chrome.storage.local.get('lastState');
+  render(lastState || null);
   $('refresh').addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'CHECK_NOW' }, async (resp) => {
-      const { quotaMemory: mem } = await chrome.storage.local.get('quotaMemory');
-      render(resp && resp.state ? resp.state : null, mem || null);
+    chrome.runtime.sendMessage({ type: 'CHECK_NOW' }, (resp) => {
+      render(resp && resp.state ? resp.state : null);
     });
   });
   $('open-options').addEventListener('click', openOptions);
