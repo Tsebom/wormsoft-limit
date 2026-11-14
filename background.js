@@ -140,6 +140,20 @@ async function checkLimit() {
 
 // ---------- Значок ----------
 
+// Плавный градиент «зелёный 100% → красный 0%»: hue 120→0 при фиксированных
+// насыщенности/яркости (ближе к исходным #2e7d32 и #c62828).
+function badgeColorFor(pct) {
+  const p = Math.max(0, Math.min(1, pct));
+  const h = 120 * p, s = 0.7, l = 0.4;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const c = l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+    return Math.round(255 * c).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
 async function updateBadge(state, memory) {
   const action = chrome.action;
   if (state.error) {
@@ -149,44 +163,21 @@ async function updateBadge(state, memory) {
   }
   if (state.total === null) return;
   await action.setBadgeText({ text: fmtNum(state.total) });
-  // Цвет — по градиенту: зелёный (100% кредитов) -> красный (0%).
-  await action.setBadgeBackgroundColor({ color: badgeColor(state, memory) });
-}
-
-// Доля остатка по тарифу от зафиксированного максимума (см. updateQuotaMemory):
-// 1 — полных кредитов, 0 — не осталось. Процент считается по subscriptionLimit
-// (буст в ориентир не входит).
-function quotaPercent(state, memory) {
-  if (
+  if (state.isFrozen) {
+    // Оранжевый — заморозка (действуют лимиты Free).
+    await action.setBadgeBackgroundColor({ color: '#ef6c00' });
+    return;
+  }
+  // Градиент от ориентира по тарифу: сколько % кредита осталось.
+  // Если ориентир ещё не зафиксирован (первые проверки до сброса периода) — зелёный.
+  const hasOrientation =
     state.subscription !== null &&
     memory &&
     memory.type === state.subscriptionType &&
     typeof memory.maxSubscription === 'number' &&
-    memory.maxSubscription > 0
-  ) {
-    return Math.max(0, Math.min(1, state.subscription / memory.maxSubscription));
-  }
-  // Ориентир недоступен (fallback-формат API): 0 кредитов — 0, иначе считаем полный остаток.
-  if (state.total !== null) return state.total <= 0 ? 0 : 1;
-  return 1;
-}
-
-// HSL-интерполяция от красного (hue 0) к зелёному (hue 120) в точный hex.
-function badgeColor(state, memory) {
-  const hue = Math.round(quotaPercent(state, memory) * 120);
-  return hslToHex(hue, 85, 45);
-}
-
-function hslToHex(h, s, l) {
-  s /= 100;
-  l /= 100;
-  const a = s * Math.min(l, 1 - l);
-  const f = (n) => {
-    const k = (n + h / 30) % 12;
-    const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
-    return Math.round(255 * c).toString(16).padStart(2, '0');
-  };
-  return `#${f(0)}${f(8)}${f(4)}`;
+    memory.maxSubscription > 0;
+  const pct = hasOrientation ? state.subscription / memory.maxSubscription : 1;
+  await action.setBadgeBackgroundColor({ color: badgeColorFor(pct) });
 }
 
 function fmtNum(n) {
