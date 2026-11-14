@@ -16,13 +16,6 @@ function fmtFull(n) {
   return n === null || n === undefined ? '—' : Math.round(n).toLocaleString('ru-RU');
 }
 
-function fmtTime(ts) {
-  if (!ts) return '—';
-  const d = new Date(ts);
-  return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) +
-    ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-
 // Unix-секунды -> "через 3 ч 20 мин"; title = точная дата
 function fmtReset(unixSec) {
   if (!unixSec) return { text: '—', title: '' };
@@ -120,7 +113,6 @@ function render(state, memory) {
     usage.title = '';
   }
 
-  $('lastcheck').textContent = fmtTime(state.lastCheck);
 }
 
 function openOptions() {
