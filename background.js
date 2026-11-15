@@ -171,6 +171,11 @@ async function checkLimit() {
 
 async function updateBadge(state, memory) {
   const action = chrome.action;
+  // Текст бейджа — всегда белый (иначе Chrome сам подбирает цвет под фон
+  // и цифры на жёлто-зелёных тонах градиента могут стать тёмными).
+  if (typeof action.setBadgeTextColor === 'function') {
+    await action.setBadgeTextColor({ color: '#ffffff' });
+  }
   if (state.error) {
     await action.setBadgeText({ text: '!' });
     await action.setBadgeBackgroundColor({ color: '#c62828' });
