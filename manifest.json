@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WormSoft Limit Monitor",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Мониторинг остатка лимита провайдера WormSoft (ai.wormsoft.ru): опрос /api/v1/account/limits раз в минуту, остаток на иконке и в popup, ориентир по тарифу (процент использовано от зафиксированного максимума).",
   "permissions": ["storage", "alarms"],
   "host_permissions": ["https://ai.wormsoft.ru/*"],
