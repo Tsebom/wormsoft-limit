@@ -43,7 +43,7 @@ function setReset(id, unixSec, emptyText) {
   el.title = title;
 }
 
-function render(state, memory) {
+function render(state, memory, probeState) {
   const dot = $('status-dot');
   const quotaView = $('quota-view');
   const errorView = $('error-view');
@@ -129,6 +129,20 @@ function render(state, memory) {
     usage.title = '';
   }
 
+  // Последний пробный запрос (если включён в настройках): он запускает
+  // счётчик до следующего обновления лимита. Ошибка может содержать
+  // statusText от сервера — только textContent.
+  const probeRow = $('probe-row');
+  if (probeState && typeof probeState.at === 'number' && probeState.at > 0) {
+    const time = new Date(probeState.at).toLocaleTimeString('ru-RU');
+    $('probe').textContent = probeState.ok
+      ? `запущен счётчик (${time})`
+      : `ошибка: ${probeState.error || 'неизвестно'} (${time})`;
+    probeRow.style.display = 'flex';
+  } else {
+    probeRow.style.display = 'none';
+  }
+
 }
 
 function openOptions() {
@@ -137,12 +151,16 @@ function openOptions() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  const { lastState, quotaMemory } = await chrome.storage.local.get(['lastState', 'quotaMemory']);
-  render(lastState || null, quotaMemory || null);
+  const { lastState, quotaMemory, probeState } = await chrome.storage.local.get([
+    'lastState', 'quotaMemory', 'probeState',
+  ]);
+  render(lastState || null, quotaMemory || null, probeState || null);
   $('refresh').addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'CHECK_NOW' }, async (resp) => {
-      const { quotaMemory: mem } = await chrome.storage.local.get('quotaMemory');
-      render(resp && resp.state ? resp.state : null, mem || null);
+      const { quotaMemory: mem, probeState: probe } = await chrome.storage.local.get([
+        'quotaMemory', 'probeState',
+      ]);
+      render(resp && resp.state ? resp.state : null, mem || null, probe || null);
     });
   });
   $('open-options').addEventListener('click', openOptions);

@@ -3,12 +3,17 @@
 const $ = (id) => document.getElementById(id);
 
 const DEFAULT_ENDPOINT = 'https://ai.wormsoft.ru/api/v1/account/limits';
+const DEFAULT_PROBE_MODEL = 'openai/gpt-5.4-mini';
 
 document.addEventListener('DOMContentLoaded', async () => {
-  const { endpoint, apiKey } = await chrome.storage.local.get(['endpoint', 'apiKey']);
+  const { endpoint, apiKey, probeEnabled, probeModel } = await chrome.storage.local.get([
+    'endpoint', 'apiKey', 'probeEnabled', 'probeModel',
+  ]);
 
   $('endpoint').value = endpoint || DEFAULT_ENDPOINT;
   $('apikey').value = apiKey || '';
+  $('probe-enabled').checked = probeEnabled === true;
+  $('probe-model').value = probeModel || DEFAULT_PROBE_MODEL;
 
   $('save').addEventListener('click', () => save(false));
   $('test').addEventListener('click', async () => {
@@ -32,6 +37,8 @@ async function save(silent = false) {
   await chrome.storage.local.set({
     endpoint: $('endpoint').value.trim() || DEFAULT_ENDPOINT,
     apiKey: $('apikey').value.trim(),
+    probeEnabled: $('probe-enabled').checked,
+    probeModel: $('probe-model').value.trim() || DEFAULT_PROBE_MODEL,
   });
   if (!silent) setStatus('ok', 'Сохранено.');
 }

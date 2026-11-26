@@ -9,7 +9,21 @@ const CHECK_INTERVAL_MIN = 1;
 const DEFAULTS = {
   endpoint: 'https://ai.wormsoft.ru/api/v1/account/limits',
   apiKey: '',
+  // Пробный запрос (запуск счётчика сброса) выключен по умолчанию:
+  // он реально списывает кредиты, поэтому включается явно в настройках.
+  probeEnabled: false,
+  probeModel: 'openai/gpt-5.4-mini',
 };
+
+// ---------- Пробный запрос (константы) ----------
+
+// LLM endpoint: минимальный запрос после обновления лимита запускает счётчик
+// до следующего обновления. Хост тот же, что и у endpoint лимитов, поэтому
+// отдельных host_permissions не требуется.
+const PROBE_URL = 'https://ai.wormsoft.ru/api/gpt/chat/completions';
+const PROBE_MAX_TOKENS = 1;                    // минимальный ответ — минимальная цена
+const PROBE_COOLDOWN_MS = 10 * 60 * 1000;      // пауза между попытками
+const PROBE_MAX_ATTEMPTS = 3;                  // неудачных попыток на одно обновление
 
 // ---------- Настройки ----------
 
@@ -213,35 +227,173 @@ function fmtNum(n) {
 // subscriptionLimit с момента последнего изменения тарифа. При смене
 // subscriptionType (включая заморозку) память сбрасывается и ориентир
 // определяется заново.
+//
+// Поля пробного запроса (см. следующий блок):
+//   probedMax     — maxSubscription, для которого пробный запрос уже выполнен
+//                   (или выработан лимит попыток); закрывает цикл, чтобы не
+//                   списывать кредиты повторно в пределах одного обновления;
+//   lastProbeAt   — время последней попытки (cooldown между попытками);
+//   probeAttempts — число неудачных попыток для текущего цикла.
 
-async function updateQuotaMemory(state) {
-  if (!state.ok || state.subscription === null) return;
+async function readQuotaMemory() {
   const { quotaMemory } = await chrome.storage.local.get('quotaMemory');
-  const cur = quotaMemory && typeof quotaMemory === 'object' ? quotaMemory : null;
+  return quotaMemory && typeof quotaMemory === 'object' ? quotaMemory : null;
+}
 
+// Возвращает true, если это наблюдение — обновление лимита:
+// остаток тарифа стал больше прежнего зафиксированного максимума.
+async function updateQuotaMemory(state) {
+  if (!state.ok || state.subscription === null) return false;
+  const cur = await readQuotaMemory();
+
+  let refreshed = false;
+  let next;
   if (!cur || cur.type !== state.subscriptionType) {
     // Смена подписки — сбрасываем максимум и запоминаем с нуля.
-    await chrome.storage.local.set({
-      quotaMemory: { type: state.subscriptionType, maxSubscription: state.subscription },
-    });
-    return;
+    // Пробный запрос здесь НЕ делаем: неизвестно, в какой точке цикла
+    // находится новый тариф, списание может уйти вхолостую. Ждём первого
+    // реального обновления лимита (подскока остатка) — только оно является
+    // безопасным моментом для запуска счётчика.
+    next = {
+      type: state.subscriptionType,
+      maxSubscription: state.subscription,
+      probedMax: null,
+      lastProbeAt: 0,
+      probeAttempts: 0,
+    };
+  } else {
+    next = {
+      ...cur,
+      // Новый максимум (например, только что произошло обновление лимита).
+      maxSubscription: Math.max(cur.maxSubscription ?? 0, state.subscription),
+    };
+    refreshed = state.subscription > (cur.maxSubscription ?? 0);
+    if (refreshed) {
+      // Обновление лимита — новый цикл: пробный запрос снова разрешён.
+      next.probedMax = null;
+      next.probeAttempts = 0;
+    }
   }
-  if (state.subscription > cur.maxSubscription) {
-    // Новый максимум (например, только что произошёл сброс периода).
+  await chrome.storage.local.set({ quotaMemory: next });
+  return refreshed;
+}
+
+// ---------- Пробный запрос: запуск счётчика до следующего обновления ----------
+// Обновление лимита привязано к первому запросу после предыдущего обновления:
+// счётчик до следующего обновления стартует только с него. Если после
+// обновления лимита запросов долго не делать, следующее обновление (и полный
+// остаток тарифа) откладывается. Чтобы счётчик стартовал ровно в момент
+// обновления, расширение может сразу отправить минимальный LLM-запрос
+// (max_tokens: 1 — стоимость в единицы кредитов, заведомо <= 100).
+//
+// Логика «не сжечь кредиты вхолостую»:
+//   • выключено по умолчанию, включается явно в настройках;
+//   • только в момент обновления лимита (остаток тарифа подпрыгнул до нового
+//     максимума) — в остальные моменты запрос ничего не даёт;
+//   • при активном бусте НЕ делается: списание ушло бы в буст-кредиты, а
+//     пользователь с бустом и так делает запросы — бусты не учитываются;
+//   • не делается при ошибках API и заморозке подписки;
+//   • один цикл = максимум одна успешная попытка (probedMax), между
+//     попытками cooldown, после 3 неудач цикл закрывается без успеха.
+//   • при смене тарифа пробный запрос не делается до первого обновления.
+
+async function maybeProbe(state, refreshed, settings) {
+  const info = { fired: false, ok: null, error: null, at: 0 };
+  if (!refreshed) return info;
+  if (!settings.probeEnabled) return info;
+  if (!state.ok || state.isFrozen) return info;
+  if (state.subscription === null || state.subscription <= 0) return info;
+  // Бусты не учитываются (см. выше).
+  if (state.boost !== null && state.boost > 0) return info;
+
+  const mem = await readQuotaMemory();
+  if (!mem || mem.type !== state.subscriptionType) return info;
+  // Цикл уже закрыт (успех или выработан лимит попыток) — не тратим повторно.
+  if (mem.probedMax !== null && mem.probedMax === mem.maxSubscription) return info;
+  // Cooldown между попытками.
+  if (Date.now() - (mem.lastProbeAt || 0) < PROBE_COOLDOWN_MS) return info;
+
+  info.at = Date.now();
+  info.fired = true;
+  const res = await fireProbe(settings);
+  info.ok = res.ok;
+  info.error = res.error;
+
+  const cur = await readQuotaMemory();
+  if (cur && cur.type === state.subscriptionType) {
+    const attempts = res.ok ? 0 : (cur.probeAttempts || 0) + 1;
+    const giveUp = !res.ok && attempts >= PROBE_MAX_ATTEMPTS;
     await chrome.storage.local.set({
-      quotaMemory: { ...cur, maxSubscription: state.subscription },
+      quotaMemory: {
+        ...cur,
+        lastProbeAt: info.at,
+        probeAttempts: giveUp ? 0 : attempts,
+        // Успех (или 3 неудачи подряд) закрывает цикл.
+        probedMax: res.ok || giveUp ? mem.maxSubscription : cur.probedMax ?? null,
+      },
     });
+  }
+  return info;
+}
+
+async function fireProbe(settings) {
+  // Тот же контроль хоста, что и для endpoint лимитов: ключ не должен
+  // уйти на посторонний сервер.
+  const endpointError = validateEndpoint(PROBE_URL);
+  if (endpointError) return { ok: false, error: endpointError };
+  if (!settings.apiKey) return { ok: false, error: 'Не указан API-ключ.' };
+  try {
+    const res = await fetch(PROBE_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${settings.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      cache: 'no-store',
+      body: JSON.stringify({
+        model: settings.probeModel || DEFAULTS.probeModel,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: PROBE_MAX_TOKENS,
+        stream: false,
+      }),
+    });
+    if (!res.ok) {
+      return { ok: false, error: `HTTP ${res.status} ${res.statusText}`.trim() };
+    }
+    // Тело ответа не важно — важен сам запрос-списание, запускающий счётчик.
+    await res.json().catch(() => null);
+    return { ok: true, error: null };
+  } catch (e) {
+    return { ok: false, error: `Ошибка запроса: ${e.message}` };
   }
 }
 
 // ---------- Оркестрация ----------
 
 async function runCheck() {
+  const settings = await getSettings();
   const state = await checkLimit();
-  await updateQuotaMemory(state);
+
+  // Фиксируем максимум; заодно узнаём, произошло ли обновление лимита
+  // (остаток тарифа стал больше прежнего зафиксированного максимума).
+  const refreshed = await updateQuotaMemory(state);
+
+  // Пробный запрос — только в момент обновления лимита (см. maybeProbe).
+  const probe = await maybeProbe(state, refreshed, settings);
+
+  let finalState = state;
+  if (probe.fired) {
+    // Перечитываем остаток после списания пробного запроса, чтобы бейдж
+    // и popup показывали цифры уже с его учётом.
+    finalState = await checkLimit();
+    await updateQuotaMemory(finalState);
+  }
+
   const { quotaMemory } = await chrome.storage.local.get('quotaMemory');
-  await chrome.storage.local.set({ lastState: state });
-  await updateBadge(state, quotaMemory);
+  const toStore = { lastState: finalState };
+  if (probe.fired) toStore.probeState = probe; // храним последний результат
+  await chrome.storage.local.set(toStore);
+  await updateBadge(finalState, quotaMemory);
 }
 
 async function ensureAlarm() {
