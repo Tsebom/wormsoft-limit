@@ -12,7 +12,10 @@ const DEFAULTS = {
   // Пробный запрос (запуск счётчика сброса) выключен по умолчанию:
   // он реально списывает кредиты, поэтому включается явно в настройках.
   probeEnabled: false,
-  probeModel: 'openai/gpt-5.4-mini',
+  probeModel: 'openai/gpt-6.2-astra',
+  // ~1 кредит списания: у astra 25 кр/1M выходных токенов → 40 000 токенов.
+  // Меньше — списание уйдёт в доли кредита и остаток не изменится.
+  probeMaxTokens: 42000,
 };
 
 // ---------- Пробный запрос (константы) ----------
@@ -21,7 +24,11 @@ const DEFAULTS = {
 // до следующего обновления. Хост тот же, что и у endpoint лимитов, поэтому
 // отдельных host_permissions не требуется.
 const PROBE_URL = 'https://ai.wormsoft.ru/api/gpt/chat/completions';
-const PROBE_MAX_TOKENS = 1;                    // минимальный ответ — минимальная цена
+// max_tokens — это потолок, а не цель: чтобы модель реально сгенерировала
+// десятки тысяч токенов, просим заведомо более длинный текст (числа от 1 до
+// 100000 — сотни тысяч символов). Запрос упрётся в max_tokens
+// (finish_reason: length) и спишет всю квоту токенов.
+const PROBE_PROMPT = 'Выведи числа от 1 до 100000 через запятую, без пробелов и пояснений.';
 const PROBE_COOLDOWN_MS = 10 * 60 * 1000;      // пауза между попытками
 const PROBE_MAX_ATTEMPTS = 3;                  // неудачных попыток на одно обновление
 
@@ -283,8 +290,9 @@ async function updateQuotaMemory(state) {
 // счётчик до следующего обновления стартует только с него. Если после
 // обновления лимита запросов долго не делать, следующее обновление (и полный
 // остаток тарифа) откладывается. Чтобы счётчик стартовал ровно в момент
-// обновления, расширение может сразу отправить минимальный LLM-запрос
-// (max_tokens: 1 — стоимость в единицы кредитов, заведомо <= 100).
+// обновления, расширение может сразу отправить LLM-запрос с большой квотой
+// выходных токенов (по умолчанию 42 000 ≈ 1 кредит на openai/gpt-6.2-astra,
+// 25 кр/1M выходных) — тогда списание видно по остатку (≥ 1 кредита).
 //
 // Логика «не сжечь кредиты вхолостую»:
 //   • выключено по умолчанию, включается явно в настройках;
@@ -296,6 +304,10 @@ async function updateQuotaMemory(state) {
 //   • один цикл = максимум одна успешная попытка (probedMax), между
 //     попытками cooldown, после 3 неудач цикл закрывается без успеха.
 //   • при смене тарифа пробный запрос не делается до первого обновления.
+//
+// Списание ориентировочно: probeMaxTokens × цену выходных токенов модели
+// (см. https://ai.wormsoft.ru/api/public/models, поля input/output —
+// кредиты за 1M токенов). Для astra это ~1,05 кредита, всегда <= 100.
 
 async function maybeProbe(state, refreshed, settings) {
   const info = { fired: false, ok: null, error: null, at: 0 };
@@ -318,6 +330,8 @@ async function maybeProbe(state, refreshed, settings) {
   const res = await fireProbe(settings);
   info.ok = res.ok;
   info.error = res.error;
+  info.tokens = res.tokens;
+  info.finishReason = res.finishReason;
 
   const cur = await readQuotaMemory();
   if (cur && cur.type === state.subscriptionType) {
@@ -352,17 +366,22 @@ async function fireProbe(settings) {
       cache: 'no-store',
       body: JSON.stringify({
         model: settings.probeModel || DEFAULTS.probeModel,
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: PROBE_MAX_TOKENS,
+        messages: [{ role: 'user', content: PROBE_PROMPT }],
+        max_tokens: Number(settings.probeMaxTokens) > 0
+          ? Number(settings.probeMaxTokens)
+          : DEFAULTS.probeMaxTokens,
         stream: false,
       }),
     });
     if (!res.ok) {
       return { ok: false, error: `HTTP ${res.status} ${res.statusText}`.trim() };
     }
-    // Тело ответа не важно — важен сам запрос-списание, запускающий счётчик.
-    await res.json().catch(() => null);
-    return { ok: true, error: null };
+    // Читаем usage: сколько токенов реально списано (для строки в popup).
+    const tokens = await res.json().then((j) => ({
+      tokens: j && j.usage ? Number(j.usage.total_tokens) || null : null,
+      finishReason: j && j.choices && j.choices[0] ? j.choices[0].finish_reason || null : null,
+    })).catch(() => ({ tokens: null, finishReason: null }));
+    return { ok: true, error: null, ...tokens };
   } catch (e) {
     return { ok: false, error: `Ошибка запроса: ${e.message}` };
   }

@@ -3,17 +3,18 @@
 const $ = (id) => document.getElementById(id);
 
 const DEFAULT_ENDPOINT = 'https://ai.wormsoft.ru/api/v1/account/limits';
-const DEFAULT_PROBE_MODEL = 'openai/gpt-5.4-mini';
+const DEFAULT_PROBE_MODEL = 'openai/gpt-6.2-astra';
+const DEFAULT_PROBE_MAX_TOKENS = 42000;
 
 document.addEventListener('DOMContentLoaded', async () => {
-  const { endpoint, apiKey, probeEnabled, probeModel } = await chrome.storage.local.get([
-    'endpoint', 'apiKey', 'probeEnabled', 'probeModel',
-  ]);
+  const { endpoint, apiKey, probeEnabled, probeModel, probeMaxTokens } =
+    await chrome.storage.local.get(['endpoint', 'apiKey', 'probeEnabled', 'probeModel', 'probeMaxTokens']);
 
   $('endpoint').value = endpoint || DEFAULT_ENDPOINT;
   $('apikey').value = apiKey || '';
   $('probe-enabled').checked = probeEnabled === true;
   $('probe-model').value = probeModel || DEFAULT_PROBE_MODEL;
+  $('probe-max-tokens').value = Number(probeMaxTokens) > 0 ? Number(probeMaxTokens) : DEFAULT_PROBE_MAX_TOKENS;
 
   $('save').addEventListener('click', () => save(false));
   $('test').addEventListener('click', async () => {
@@ -34,11 +35,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 async function save(silent = false) {
+  const maxTokens = Number($('probe-max-tokens').value);
   await chrome.storage.local.set({
     endpoint: $('endpoint').value.trim() || DEFAULT_ENDPOINT,
     apiKey: $('apikey').value.trim(),
     probeEnabled: $('probe-enabled').checked,
     probeModel: $('probe-model').value.trim() || DEFAULT_PROBE_MODEL,
+    probeMaxTokens: Number.isFinite(maxTokens) && maxTokens > 0
+      ? Math.round(maxTokens)
+      : DEFAULT_PROBE_MAX_TOKENS,
   });
   if (!silent) setStatus('ok', 'Сохранено.');
 }

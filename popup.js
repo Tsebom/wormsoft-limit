@@ -135,8 +135,10 @@ function render(state, memory, probeState) {
   const probeRow = $('probe-row');
   if (probeState && typeof probeState.at === 'number' && probeState.at > 0) {
     const time = new Date(probeState.at).toLocaleTimeString('ru-RU');
+    const tokens = Number.isFinite(probeState.tokens) && probeState.tokens > 0
+      ? ` · списано ${probeState.tokens.toLocaleString('ru-RU')} ток.` : '';
     $('probe').textContent = probeState.ok
-      ? `запущен счётчик (${time})`
+      ? `запущен счётчик${tokens} (${time})`
       : `ошибка: ${probeState.error || 'неизвестно'} (${time})`;
     probeRow.style.display = 'flex';
   } else {
